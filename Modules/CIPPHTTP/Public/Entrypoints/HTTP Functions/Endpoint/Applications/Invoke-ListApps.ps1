@@ -74,15 +74,17 @@ function Invoke-ListApps {
                 }
             }
 
-            $App | Add-Member -NotePropertyName 'AppAssignment' -NotePropertyValue ($AppAssignment -join ', ') -Force
-            $App | Add-Member -NotePropertyName 'AppExclude' -NotePropertyValue ($AppExclude -join ', ') -Force
+            $App | Add-Member -NotePropertyMembers ([ordered]@{
+                    AppAssignment = ($AppAssignment -join ', ')
+                    AppExclude    = ($AppExclude -join ', ')
+                }) -Force
             $App
         }
 
         $StatusCode = [HttpStatusCode]::OK
     } catch {
         $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-        $StatusCode = [HttpStatusCode]::Forbidden
+        $StatusCode = [HttpStatusCode]::InternalServerError
         $GraphRequest = $ErrorMessage
     }
 

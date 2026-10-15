@@ -9,7 +9,8 @@ function Get-CIPPSPOAdminListData {
     Returns flat admin list Row objects (all pages). Does not join Graph or map browser DTOs.
 
     Dotted numeric props (e.g. StorageUsed.) are an RLD quirk; -NormalizeRows copies them to
-    undotted names when present.
+    undotted names when present, coerces StorageUsed / NumOfFiles / StorageQuota to int64, and
+    adds StorageQuotaBytes (admin quota is MB unless already byte-sized).
 
     .PARAMETER TenantFilter
     Tenant to query.
@@ -35,7 +36,8 @@ function Get-CIPPSPOAdminListData {
     Abort if paging exceeds this many pages.
 
     .PARAMETER NormalizeRows
-    Copy StorageUsed. / NumOfFiles. / etc. onto undotted property names.
+    Copy StorageUsed. / NumOfFiles. / etc. onto undotted property names, parse numerics, and
+    derive StorageQuotaBytes.
 
     .FUNCTIONALITY
     Internal
@@ -170,13 +172,31 @@ function Get-CIPPSPOAdminListData {
         foreach ($Row in @($Page.Row)) {
             if ($null -eq $Row) { continue }
             if ($NormalizeRows) {
-                foreach ($Prop in @($Row.PSObject.Properties)) {
+                # Per row: Add-Member throws internally while binding, and each Properties.Name scan walks every property
+                $Props = $Row.PSObject.Properties
+                foreach ($Prop in @($Props)) {
                     $Name = [string]$Prop.Name
                     if ($Name.EndsWith('.') -and $Name.Length -gt 1) {
                         $Plain = $Name.TrimEnd('.')
-                        if (-not ($Row.PSObject.Properties.Name -contains $Plain)) {
-                            $Row | Add-Member -NotePropertyName $Plain -NotePropertyValue $Prop.Value -Force
+                        if ($null -eq $Props[$Plain]) { $Props.Add([psnoteproperty]::new($Plain, $Prop.Value)) }
+                    }
+                }
+                foreach ($Field in @('StorageUsed', 'NumOfFiles', 'StorageQuota')) {
+                    if ($null -ne $Props[$Field]) {
+                        $Value = $Row.$Field
+                        $Coerced = ConvertTo-SPOAdminListInt64 -Raw $Value
+                        if ($null -ne $Coerced -or ($Value -is [string] -and -not [string]::IsNullOrWhiteSpace($Value))) {
+                            $Props.Remove($Field)
+                            $Props.Add([psnoteproperty]::new($Field, $Coerced))
                         }
+                    }
+                }
+                if ($null -ne $Props['StorageQuota']) {
+                    $QuotaMb = $Row.StorageQuota
+                    if ($null -ne $QuotaMb -and $QuotaMb -gt 0) {
+                        $QuotaBytes = if ($QuotaMb -lt 1TB) { [int64]($QuotaMb * 1MB) } else { $QuotaMb }
+                        $Props.Remove('StorageQuotaBytes')
+                        $Props.Add([psnoteproperty]::new('StorageQuotaBytes', $QuotaBytes))
                     }
                 }
             }

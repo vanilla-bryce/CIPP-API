@@ -10,10 +10,6 @@ function Invoke-ListAppProtectionPolicies {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     $TenantFilter = $Request.Query.tenantFilter
     # Serve from the reporting database cache instead of live Graph. Much faster, especially for AllTenants.
     $UseReportDB = $Request.Query.UseReportDB -eq $true
@@ -91,8 +87,6 @@ function Invoke-ListAppProtectionPolicies {
                 $_.body.value
             }
 
-
-
             foreach ($Policy in $ManagedAppPolicies) {
                 $policyType = switch ($Policy.'URLName') {
                     'androidManagedAppProtection' { 'Android App Protection'; break }
@@ -126,11 +120,13 @@ function Invoke-ListAppProtectionPolicies {
                     }
                 }
 
-                $Policy | Add-Member -NotePropertyName 'PolicyTypeName' -NotePropertyValue $policyType -Force
-                # $Policy | Add-Member -NotePropertyName 'URLName' -NotePropertyValue 'managedAppPolicies' -Force
-                $Policy | Add-Member -NotePropertyName 'PolicySource' -NotePropertyValue 'AppProtection' -Force
-                $Policy | Add-Member -NotePropertyName 'PolicyAssignment' -NotePropertyValue ($PolicyAssignment -join ', ') -Force
-                $Policy | Add-Member -NotePropertyName 'PolicyExclude' -NotePropertyValue ($PolicyExclude -join ', ') -Force
+                # URLName is intentionally not set here (already carried from the per-type bulk fetch).
+                $Policy | Add-Member -NotePropertyMembers ([ordered]@{
+                        PolicyTypeName   = $policyType
+                        PolicySource     = 'AppProtection'
+                        PolicyAssignment = ($PolicyAssignment -join ', ')
+                        PolicyExclude    = ($PolicyExclude -join ', ')
+                    }) -Force
                 $GraphRequest.Add($Policy)
             }
         }
@@ -167,16 +163,18 @@ function Invoke-ListAppProtectionPolicies {
                     }
                 }
 
-                $Config | Add-Member -NotePropertyName 'PolicyTypeName' -NotePropertyValue $policyType -Force
-                $Config | Add-Member -NotePropertyName 'URLName' -NotePropertyValue 'mobileAppConfigurations' -Force
-                $Config | Add-Member -NotePropertyName 'PolicySource' -NotePropertyValue 'AppConfiguration' -Force
-                $Config | Add-Member -NotePropertyName 'PolicyAssignment' -NotePropertyValue ($PolicyAssignment -join ', ') -Force
-                $Config | Add-Member -NotePropertyName 'PolicyExclude' -NotePropertyValue ($PolicyExclude -join ', ') -Force
-
+                $ConfigProps = [ordered]@{
+                    PolicyTypeName   = $policyType
+                    URLName          = 'mobileAppConfigurations'
+                    PolicySource     = 'AppConfiguration'
+                    PolicyAssignment = ($PolicyAssignment -join ', ')
+                    PolicyExclude    = ($PolicyExclude -join ', ')
+                }
                 # Ensure isAssigned property exists for consistency
                 if (-not $Config.PSObject.Properties['isAssigned']) {
-                    $Config | Add-Member -NotePropertyName 'isAssigned' -NotePropertyValue $false -Force
+                    $ConfigProps['isAssigned'] = $false
                 }
+                $Config | Add-Member -NotePropertyMembers $ConfigProps -Force
                 $GraphRequest.Add($Config)
             }
         }
@@ -187,7 +185,7 @@ function Invoke-ListAppProtectionPolicies {
         $StatusCode = [HttpStatusCode]::OK
     } catch {
         $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-        $StatusCode = [HttpStatusCode]::Forbidden
+        $StatusCode = [HttpStatusCode]::InternalServerError
         $GraphRequest = $ErrorMessage
     }
 

@@ -1,5 +1,6 @@
 BeforeAll {
     $RepoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
+    Add-Type -Path (Join-Path $RepoRoot 'Shared/CIPPSharp/bin/CIPPSharp.dll')
 
     function Get-CippTable { param($tablename) @{} }
     function Get-CIPPAzDataTableEntity { param($Filter, $Property) }
@@ -85,6 +86,27 @@ Describe 'Add-CIPPDbItem authoritative empty collections' {
         }
     }
 
+    It 'projects every row-level split marker so the cleanup reassembles split orphans instead of dropping them' {
+        # Regression for #462. Get-AzDataTableLargeEntity only reassembles a split entity when the
+        # projection carries all of OriginalEntityId, PartIndex and PartCount. Selecting a subset
+        # (OriginalEntityId alone) made the module recognise a split row but fail to reassemble it,
+        # throw IncompleteEntity, and drop the whole entity - so the sweep never saw stale split
+        # rows from earlier runs and one uncollectable generation accumulated per run. The sweep
+        # relies on reassembly (each logical entity carries its RunId), so all three must be present.
+        Mock Get-CIPPAzDataTableEntity { @() }
+
+        Add-CIPPDbItem -TenantFilter 'contoso.onmicrosoft.com' -Type 'IntuneIntents' -Data @(
+            [PSCustomObject]@{ id = 'new-policy' }
+        )
+
+        Should -Invoke Get-CIPPAzDataTableEntity -Times 1 -Exactly -ParameterFilter {
+            $Property -contains 'OriginalEntityId' -and
+            $Property -contains 'PartIndex' -and
+            $Property -contains 'PartCount' -and
+            $Property -contains 'RunId'
+        }
+    }
+
     It 'stamps every written row with the run id the cleanup keys on' {
         $script:Flushed = [System.Collections.Generic.List[object]]::new()
         Mock Add-CIPPAzDataTableEntity { $script:Flushed.AddRange(@($Entity)) }
@@ -99,5 +121,22 @@ Describe 'Add-CIPPDbItem authoritative empty collections' {
         $DataRows.Count | Should -Be 2
         $DataRows | ForEach-Object { $_.RunId | Should -Not -BeNullOrEmpty }
         ($DataRows.RunId | Sort-Object -Unique).Count | Should -Be 1
+    }
+}
+
+Describe 'Add-CIPPDbItem row data' {
+    BeforeEach {
+        Mock Write-LogMessage {}
+        Mock Get-CIPPAzDataTableEntity {}
+        Mock Add-CIPPAzDataTableEntity {}
+    }
+
+    It 'writes only the row''s own fields after its properties were enumerated' {
+        $Policy = '{"id":"p1","settings":{"a":1}}' | ConvertFrom-Json
+        $null = @($Policy.PSObject.Properties); $null = @($Policy.settings.PSObject.Properties)
+
+        Add-CIPPDbItem -TenantFilter 'contoso.onmicrosoft.com' -Type 'Policies' -Data @($Policy)
+
+        Should -Invoke Add-CIPPAzDataTableEntity -Times 1 -ParameterFilter { $Entity[0].Data -ceq '{"id":"p1","settings":{"a":1}}' }
     }
 }
